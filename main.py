@@ -40,6 +40,19 @@ def get_current_datetime():
     return datetime.now().strftime("%d/%m/%y %H:%M:%S")
 
 
+def ensure_json_files():
+    """Create required JSON files with sane defaults if they are missing."""
+    defaults = {
+        "userData.json": {"backendActive": False, "Session Time": 10},
+        "userSessions.json": {"Sessions": []},
+        "userXP.json": {"XP": 0},
+        "distractionHistory.json": {"Distractions": []},
+    }
+
+    for path, content in defaults.items():
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(content, f, indent=4)
 
 def install_music_files():
     target_dir = filedialog.askdirectory(title="Select Folder to Install Music")
@@ -273,6 +286,8 @@ class TimerScreen:
         ]
         pygame.mixer.init()
         root.bind("<Destroy>", self.on_closing)
+        self.timer_job = None
+        self.anim_job = None
         self.build_ui()
 
     def build_ui(self):
@@ -576,6 +591,13 @@ class TimerScreen:
     def on_closing(self, event):
         if event.widget != self.root:
             return
+        # Cancel pending UI updates to avoid callbacks hitting destroyed widgets
+        if self.timer_job:
+            self.root.after_cancel(self.timer_job)
+            self.timer_job = None
+        if self.anim_job:
+            self.root.after_cancel(self.anim_job)
+            self.anim_job = None
         pygame.mixer.music.stop()
         try:
             with open("userData.json", "r") as f:
@@ -682,7 +704,7 @@ class TimerScreen:
             self.time_left -= 1
             self.timer_label.config(text=self.format_time(self.time_left))
             self.progress["value"] = self.session_time_def - self.time_left
-            self.root.after(1000, self.update_timer)
+            self.timer_job = self.root.after(1000, self.update_timer)
         elif self.time_left == 0:
             # self.timer_running = False
             self.start_but.config(text="🚀 Start Focus Session")
@@ -726,6 +748,14 @@ class TimerScreen:
         self.paused = False
 
     def end_timer(self):
+        # Cancel pending callbacks when ending
+        if self.timer_job:
+            self.root.after_cancel(self.timer_job)
+            self.timer_job = None
+        if self.anim_job:
+            self.root.after_cancel(self.anim_job)
+            self.anim_job = None
+
         self.timer_running = False
         with open('userSessions.json', "r") as f:
             sesdat = json.load(f)
@@ -845,7 +875,7 @@ class TimerScreen:
             self.track_time.config(text=f"{minutes}:{seconds:02d} / 3:45")
         
         # Schedule next animation
-        self.root.after(200, self.animate_music_bars)
+        self.anim_job = self.root.after(200, self.animate_music_bars)
 
 class SettingsPanel(tk.Toplevel):
     def __init__(self, master):
@@ -869,7 +899,6 @@ class SettingsPanel(tk.Toplevel):
         with open("userData.json", "r") as f:
             user_data = json.load(f)
 
-        intervention_style = user_data.get("Intervention Style", "nudge")
         session_time = user_data.get("Session Time", 60)
 
         # Configure modern styles
@@ -894,9 +923,9 @@ class SettingsPanel(tk.Toplevel):
                       background=[("active", "#2563eb"),
                                  ("pressed", "#1d4ed8")])
 
-        self.build_ui(intervention_style, session_time)
+        self.build_ui(session_time)
 
-    def build_ui(self, intervention_style, session_time):
+    def build_ui(self, session_time):
         # Main container
         main_container = tk.Frame(self, bg=self.bg_primary)
         main_container.pack(fill="both", expand=True, padx=30, pady=30)
@@ -909,30 +938,6 @@ class SettingsPanel(tk.Toplevel):
                               font=("Segoe UI", 18, "bold"), 
                               bg=self.bg_primary, fg=self.text_primary)
         title_label.pack()
-
-        # Intervention Style Card
-        intervention_card = self.create_card(main_container)
-        intervention_card.pack(fill="x", pady=(0, 15))
-        
-        intervention_frame = tk.Frame(intervention_card, bg=self.bg_secondary)
-        intervention_frame.pack(fill="x", padx=25, pady=20)
-        
-        intervention_title = tk.Label(intervention_frame, text="🎯 Intervention Style", 
-                                    font=("Segoe UI", 14, "bold"),
-                                    bg=self.bg_secondary, fg=self.text_primary)
-        intervention_title.pack(anchor="w", pady=(0, 15))
-
-        self.intervention_var = tk.StringVar(value=intervention_style)
-        
-        # Modern radio buttons
-        radio_frame = tk.Frame(intervention_frame, bg=self.bg_secondary)
-        radio_frame.pack(fill="x")
-        
-        for i, style_option in enumerate(["nudge", "auto-close"]):
-            radio_btn = ttk.Radiobutton(radio_frame, text=style_option.capitalize(),
-                                       variable=self.intervention_var, value=style_option,
-                                       style="Modern.TRadiobutton")
-            radio_btn.pack(anchor="w", pady=5)
 
         # Session Time Card
         time_card = self.create_card(main_container)
@@ -998,13 +1003,11 @@ class SettingsPanel(tk.Toplevel):
         with open("userData.json", "r") as f:
             data = json.load(f)
 
-        data["Intervention Style"] = self.intervention_var.get()
         data["Session Time"] = self.session_time_var.get()
 
         with open("userData.json", "w") as f:
             json.dump(data, f, indent=4)
 
-        print(f"Intervention style: {data['Intervention Style']}")
         print(f"Pomodoro session time: {data['Session Time']} minutes")
 
         self.destroy()
@@ -1325,6 +1328,7 @@ class DistractionLogViewer(tk.Toplevel):
 
 
 if __name__ == "__main__":
+    ensure_json_files()
     root = tk.Tk()
     root.geometry("800x600")
     app = FocusApp(root)
